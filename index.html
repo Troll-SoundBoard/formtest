@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Google Forms Deep Extractor</title>
+    <title>Google Forms Deep Extractor (Proxy Mode)</title>
     <style>
         :root {
             --primary: #4285F4;
@@ -138,9 +138,9 @@
 <body>
 
 <div class="container">
-    <h1>📝 Forms Deep Extractor</h1>
+    <h1>📝 Forms Deep Extractor (Proxy)</h1>
     <p class="info">
-        Paste a Google Forms link (e.g., from a submission or pre-filled link). This tool fetches the page to extract the actual question text and answers.
+        Uses a CORS proxy to bypass browser restrictions. Paste your Google Forms submission link.
     </p>
     
     <div class="input-group">
@@ -149,7 +149,7 @@
     </div>
 
     <button id="btn" onclick="extractAnswers()">Extract Answers</button>
-    <div id="loader" class="loader">Fetching form data...</div>
+    <div id="loader" class="loader">Fetching form data via proxy...</div>
     <div id="error-msg" class="error"></div>
 
     <div id="result-area">
@@ -159,6 +159,9 @@
 </div>
 
 <script>
+    // CORS Proxy URL
+    const PROXY_URL = 'https://api.allorigins.win/raw?url=';
+
     async function extractAnswers() {
         const urlInput = document.getElementById('formUrl').value.trim();
         const resultArea = document.getElementById('result-area');
@@ -180,42 +183,34 @@
         }
 
         try {
-            // Fetch the HTML content of the form
-            const response = await fetch(urlInput);
+            // Fetch the HTML content via CORS Proxy
+            const proxyUrl = PROXY_URL + encodeURIComponent(urlInput);
+            const response = await fetch(proxyUrl);
+            
             if (!response.ok) {
-                throw new Error(`HTTP Error: ${response.status}`);
+                throw new Error(`Proxy Error: ${response.status}`);
             }
 
             const htmlText = await response.text();
             const parser = new DOMParser();
             const doc = parser.parseFromString(htmlText, 'text/html');
 
-            // Method 1: Try to find the "draft" or "submission" data in the HTML
-            // Google often stores form data in a script tag or a hidden form field
             let entries = [];
 
-            // Look for the form element that contains the submitted data
-            // Usually, the submitted answers are in a hidden input or a script variable
-            const hiddenInputs = doc.querySelectorAll('input[type="hidden"]');
-            const formDataMap = new Map();
-
-            hiddenInputs.forEach(input => {
-                if (input.name && input.value) {
-                    // Sometimes the value is the raw answer, sometimes it's an ID
-                    formDataMap.set(input.name, input.value);
-                }
-            });
-
-            // Look for the "answers" container in the HTML structure
-            // Google Forms uses a specific class for the question/answer pair in submitted views
-            const questionContainers = doc.querySelectorAll('.rKp9Cd, .fMBFMe'); // Common classes for form questions
+            // Method 1: Try to find the visual question/answer containers
+            // Google Forms uses specific classes for the rendered question and answer
+            const questionContainers = doc.querySelectorAll('.rKp9Cd, .fMBFMe, .x4I5T, .q'); 
             
-            // If we found containers, parse them
             if (questionContainers.length > 0) {
                 questionContainers.forEach(container => {
-                    const questionText = container.querySelector('.qprop, .xpdn, .q')?.innerText?.trim();
-                    const answerText = container.querySelector('.n0UhZd, .oaj7Xc, .rKp9Cd')?.innerText?.trim();
+                    // Try to find the question text
+                    const questionEl = container.querySelector('.qprop, .xpdn, .q, .D526rc');
+                    // Try to find the answer text
+                    const answerEl = container.querySelector('.n0UhZd, .oaj7Xc, .rKp9Cd, .vTlH4d');
                     
+                    const questionText = questionEl?.innerText?.trim();
+                    const answerText = answerEl?.innerText?.trim();
+
                     if (questionText || answerText) {
                         entries.push({
                             question: questionText || "Unknown Question",
@@ -225,27 +220,32 @@
                 });
             }
 
-            // Fallback: If no visual containers, try to parse the hidden form data
-            if (entries.length === 0 && formDataMap.size > 0) {
-                // Try to find the question labels from the HTML
-                const labels = doc.querySelectorAll('label');
-                const dataValues = Array.from(formDataMap.values());
-                
-                labels.forEach(label => {
-                    const text = label.innerText?.trim();
-                    if (text && dataValues.some(val => val.includes(text) || text.includes(val))) {
-                         // This is a crude match, but better than nothing
-                         // We'll just dump the data if we can't match perfectly
+            // Method 2: Fallback to hidden inputs if visual parsing fails
+            if (entries.length === 0) {
+                const hiddenInputs = doc.querySelectorAll('input[type="hidden"]');
+                const formDataMap = new Map();
+
+                hiddenInputs.forEach(input => {
+                    if (input.name && input.value) {
+                        formDataMap.set(input.name, input.value);
                     }
                 });
 
-                // If we still have no entries, just show the hidden data
-                if (entries.length === 0) {
+                if (formDataMap.size > 0) {
+                    // Try to find labels for the hidden inputs
+                    const labels = doc.querySelectorAll('label');
+                    const labelMap = new Map();
+                    labels.forEach(label => {
+                        const forAttr = label.getAttribute('for');
+                        if (forAttr) {
+                            labelMap.set(forAttr, label.innerText?.trim());
+                        }
+                    });
+
                     formDataMap.forEach((value, key) => {
-                        // Try to find the label for this key
-                        const label = doc.querySelector(`label[for="${key}"], label[aria-describedby="${key}"]`)?.innerText?.trim();
+                        const label = labelMap.get(key) || `Field ID: ${key}`;
                         entries.push({
-                            question: label || `Field: ${key}`,
+                            question: label,
                             answer: value
                         });
                     });
@@ -253,7 +253,7 @@
             }
 
             if (entries.length === 0) {
-                throw new Error("Could not find any answers in the page source. The link might be a 'Start Quiz' link without submission data.");
+                throw new Error("Could not find any answers. The form might be empty or the structure changed.");
             }
 
             // Display results
